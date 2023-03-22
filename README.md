@@ -1,1 +1,1 @@
-# wether-lookup
+# weather-lookup
