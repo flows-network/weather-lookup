@@ -1,75 +1,89 @@
-use flowsnet_platform_sdk::write_error_log;
-use github_flows::{
-    get_octo, listen_to_event,
-    octocrab::models::{events::payload::EventPayload, reactions::ReactionContent},
-};
-use openai_flows::{create_completion, CompletionRequest};
-use slack_flows::send_message_to_channel;
+use http_req::request;
+use lambda_flows::{request_received, send_response};
+use serde::Deserialize;
+use serde_json::Value;
 
 #[no_mangle]
-#[tokio::main(flavor = "current_thread")]
-pub async fn run() {
-    listen_to_event(
-        "DarumaDocker",
-        "github-func-test",
-        vec!["issue_comment"],
-        handler,
-    )
-    .await;
+pub fn run() {
+    request_received(|qry, _body| {
+        let city = qry.get("city").unwrap_or(&Value::Null).as_str();
+        let resp = match city {
+            Some(c) => get_weather(c).map(|w| {
+                format!(
+                    "Today: {},
+Low temperature: {} °C,
+High temperature: {} °C,
+Wind Speed: {} km/h",
+                    w.weather
+                        .first()
+                        .unwrap_or(&Weather {
+                            main: "Unknown".to_string()
+                        })
+                        .main,
+                    w.main.temp_min as i32,
+                    w.main.temp_max as i32,
+                    w.wind.speed as i32
+                )
+            }),
+            None => Err(String::from("No city in query")),
+        };
+
+        match resp {
+            Ok(r) => send_response(
+                200,
+                vec![(
+                    String::from("content-type"),
+                    String::from("text/html; charset=UTF-8"),
+                )],
+                r.as_bytes().to_vec(),
+            ),
+            Err(e) => send_response(
+                400,
+                vec![(
+                    String::from("content-type"),
+                    String::from("text/html; charset=UTF-8"),
+                )],
+                e.as_bytes().to_vec(),
+            ),
+        }
+    });
 }
 
-async fn handler(payload: EventPayload) {
-    let octo = get_octo(Some(String::from("DarumaDocker")));
-    let issues = octo.issues("DarumaDocker", "github-func-test");
-
-    let reaction = match payload {
-        EventPayload::IssuesEvent(e) => {
-            let issue_id = e.issue.number;
-            Some(
-                issues
-                    .create_reaction(issue_id, react(&e.issue.title))
-                    .await,
-            )
-        }
-        EventPayload::IssueCommentEvent(e) => {
-            let comment_id = e.comment.id.0;
-            Some(
-                issues
-                    .create_comment_reaction(comment_id, react(&e.comment.body.unwrap_or_default()))
-                    .await,
-            )
-        }
-        _ => None,
-    };
-
-    if let Some(re) = reaction {
-        match re {
-            Ok(c) => send_message_to_channel("reactor-space", "t1", c.created_at.to_rfc2822()),
-            Err(e) => send_message_to_channel("reactor-space", "t1", e.to_string()),
-        }
-    }
+#[derive(Deserialize)]
+struct ApiResult {
+    weather: Vec<Weather>,
+    main: Main,
+    wind: Wind,
 }
 
-fn react(s: &str) -> ReactionContent {
-    let prompt = format!(
-        r#"
-        Decide whether a Tweet's sentiment is positive, neutral, or negative.
-        Tweet: "{}"
-        Sentiment:
-                "#,
-        s.replace("\"", "'")
+#[derive(Deserialize)]
+struct Weather {
+    main: String,
+}
+
+#[derive(Deserialize)]
+struct Main {
+    temp_max: f64,
+    temp_min: f64,
+}
+
+#[derive(Deserialize)]
+struct Wind {
+    speed: f64,
+}
+
+fn get_weather(city: &str) -> Result<ApiResult, String> {
+    let mut writer = Vec::new();
+    let api_key = std::env::var("API_KEY").unwrap();
+    let query_str = format!(
+        "https://api.openweathermap.org/data/2.5/weather?q={city}&units=metric&appid={api_key}"
     );
-    write_error_log!(prompt);
-    let cr = CompletionRequest {
-        prompt,
-        ..Default::default()
-    };
-    let mut r = create_completion("Michael", cr);
-    send_message_to_channel("reactor-space", "t1", format!("{:?}", r));
-    match r.pop().unwrap_or_default().trim().to_lowercase().as_str() {
-        "positive" => ReactionContent::Hooray,
-        "neutral" => ReactionContent::Heart,
-        "negative" => ReactionContent::MinusOne,
-        _ => ReactionContent::Eyes,
-    }
+
+    request::get(query_str, &mut writer)
+        .map_err(|e| e.to_string())
+        .and_then(|_| {
+            serde_json::from_slice::<ApiResult>(&writer).map_err(|_| {
+                "Please check if you've typed the name of your city correctly".to_string()
+            })
+        })
 }
