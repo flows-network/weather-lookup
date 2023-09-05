@@ -1,52 +1,56 @@
 use http_req::request;
-use webhook_flows::{request_received, send_response};
+use webhook_flows::{create_endpoint, request_handler, send_response};
 use serde::Deserialize;
 use serde_json::Value;
 
 #[no_mangle]
-pub fn run() {
-    request_received(|qry, _body| {
-        let city = qry.get("city").unwrap_or(&Value::Null).as_str();
-        let resp = match city {
-            Some(c) => get_weather(c).map(|w| {
-                format!(
-                    "Today: {},
+#[tokio::main(flavor = "current_thread")]
+pub async fn on_deploy() {
+    create_endpoint().await;
+}
+
+#[request_handler]
+async fn handler(_headers: Vec<(String, String)>, _subpath: String, qry: HashMap<String, Value>, _body: Vec<u8>) {
+    let city = qry.get("city").unwrap_or(&Value::Null).as_str();
+    let resp = match city {
+        Some(c) => get_weather(c).map(|w| {
+            format!(
+                "Today: {},
 Low temperature: {} °C,
 High temperature: {} °C,
 Wind Speed: {} km/h",
-                    w.weather
-                        .first()
-                        .unwrap_or(&Weather {
-                            main: "Unknown".to_string()
-                        })
-                        .main,
-                    w.main.temp_min as i32,
-                    w.main.temp_max as i32,
-                    w.wind.speed as i32
-                )
-            }),
-            None => Err(String::from("No city in query")),
-        };
+                w.weather
+                    .first()
+                    .unwrap_or(&Weather {
+                        main: "Unknown".to_string()
+                    })
+                    .main,
+                w.main.temp_min as i32,
+                w.main.temp_max as i32,
+                w.wind.speed as i32
+            )
+        }),
+        None => Err(String::from("No city in query")),
+    };
 
-        match resp {
-            Ok(r) => send_response(
-                200,
-                vec![(
-                    String::from("content-type"),
-                    String::from("text/html; charset=UTF-8"),
-                )],
-                r.as_bytes().to_vec(),
-            ),
-            Err(e) => send_response(
-                400,
-                vec![(
-                    String::from("content-type"),
-                    String::from("text/html; charset=UTF-8"),
-                )],
-                e.as_bytes().to_vec(),
-            ),
-        }
-    });
+    match resp {
+        Ok(r) => send_response(
+            200,
+            vec![(
+                String::from("content-type"),
+                String::from("text/html; charset=UTF-8"),
+            )],
+            r.as_bytes().to_vec(),
+        ),
+        Err(e) => send_response(
+            400,
+            vec![(
+                String::from("content-type"),
+                String::from("text/html; charset=UTF-8"),
+            )],
+            e.as_bytes().to_vec(),
+        ),
+    }
 }
 
 #[derive(Deserialize)]
