@@ -2,6 +2,7 @@ use http_req::request;
 use webhook_flows::{create_endpoint, request_handler, send_response};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[no_mangle]
 #[tokio::main(flavor = "current_thread")]
